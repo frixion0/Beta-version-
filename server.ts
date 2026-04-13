@@ -15,38 +15,51 @@ async function startServer() {
   // API Proxy Route
   app.post("/api/generate", async (req, res) => {
     try {
-      const { prompt, model, guidance, seed } = req.body;
+      const { prompt, model, guidance, seed, count = 1 } = req.body;
 
       if (!prompt) {
         return res.status(400).json({ error: "Prompt is required" });
       }
 
-      const response = await fetch("https://image-api.annemravindhrareddy.workers.dev/", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          prompt,
-          model: model || "@cf/blackforestlabs/ux-1-schnell",
-          guidance: guidance || 7.5,
-          seed: seed || Math.floor(Math.random() * 1000000),
-        }),
-      });
+      const batchCount = Math.min(Math.max(parseInt(count) || 1, 1), 4);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        return res.status(response.status).json({ error: errorText });
+      const generateSingle = async (index: number) => {
+        const response = await fetch("https://image-api.annemravindhrareddy.workers.dev/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            prompt,
+            model: model || "@cf/blackforestlabs/ux-1-schnell",
+            guidance: guidance || 7.5,
+            seed: (seed || Math.floor(Math.random() * 1000000)) + index,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+
+        const blob = await response.blob();
+        return Buffer.from(await blob.arrayBuffer());
+      };
+
+      if (batchCount === 1) {
+        const buffer = await generateSingle(0);
+        res.setHeader("Content-Type", "image/png");
+        return res.send(buffer);
+      } else {
+        const buffers = await Promise.all(
+          Array.from({ length: batchCount }).map((_, i) => generateSingle(i))
+        );
+        
+        const base64Images = buffers.map(buf => `data:image/png;base64,${buf.toString('base64')}`);
+        return res.json({ images: base64Images });
       }
-
-      const blob = await response.blob();
-      const buffer = Buffer.from(await blob.arrayBuffer());
-
-      res.setHeader("Content-Type", "image/png");
-      res.send(buffer);
     } catch (error) {
       console.error("API Error:", error);
-      res.status(500).json({ error: "Internal Server Error" });
+      res.status(500).json({ error: error instanceof Error ? error.message : "Internal Server Error" });
     }
   });
 

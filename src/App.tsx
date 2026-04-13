@@ -53,6 +53,7 @@ export default function App() {
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [history, setHistory] = useState<GeneratedImage[]>([]);
   const [currentImage, setCurrentImage] = useState<GeneratedImage | null>(null);
+  const [currentBatch, setCurrentBatch] = useState<GeneratedImage[]>([]);
   const [copied, setCopied] = useState(false);
   
   // Studio Controls
@@ -61,6 +62,13 @@ export default function App() {
   const [dimensions, setDimensions] = useState('1:1');
   const [guidance, setGuidance] = useState(7.5);
   const [seed, setSeed] = useState<number | undefined>(undefined);
+  const [imageCount, setImageCount] = useState(1);
+
+  // API Playground State
+  const [testPrompt, setTestPrompt] = useState('A futuristic city in the clouds');
+  const [testCount, setTestCount] = useState(1);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<any>(null);
 
   const handleEnhance = async () => {
     if (!prompt) return;
@@ -83,6 +91,7 @@ export default function App() {
       model: selectedModel,
       guidance: guidance,
       seed: seed || Math.floor(Math.random() * 1000000),
+      count: imageCount
     };
 
     try {
@@ -95,25 +104,47 @@ export default function App() {
       });
 
       if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        
-        const newImage: GeneratedImage = {
-          id: crypto.randomUUID(),
-          url,
-          prompt: finalPrompt,
-          timestamp: Date.now(),
-          settings: {
-            model: selectedModel,
-            style: selectedStyle,
-            dimensions,
-            guidance,
-            seed: data.seed
-          }
-        };
-        
-        setCurrentImage(newImage);
-        setHistory(prev => [newImage, ...prev]);
+        if (imageCount === 1) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          
+          const newImage: GeneratedImage = {
+            id: crypto.randomUUID(),
+            url,
+            prompt: finalPrompt,
+            timestamp: Date.now(),
+            settings: {
+              model: selectedModel,
+              style: selectedStyle,
+              dimensions,
+              guidance,
+              seed: data.seed
+            }
+          };
+          
+          setCurrentImage(newImage);
+          setCurrentBatch([]);
+          setHistory(prev => [newImage, ...prev]);
+        } else {
+          const result = await res.json();
+          const newImages: GeneratedImage[] = result.images.map((base64: string, index: number) => ({
+            id: crypto.randomUUID(),
+            url: base64,
+            prompt: finalPrompt,
+            timestamp: Date.now(),
+            settings: {
+              model: selectedModel,
+              style: selectedStyle,
+              dimensions,
+              guidance,
+              seed: (data.seed as number) + index
+            }
+          }));
+          
+          setCurrentBatch(newImages);
+          setCurrentImage(null);
+          setHistory(prev => [...newImages, ...prev]);
+        }
       } else {
         console.error("Error generating image:", await res.text());
       }
@@ -149,7 +180,8 @@ const data = {
   prompt: "A neon cyborg cat in a cyberpunk alleyway",
   model: "@cf/blackforestlabs/ux-1-schnell", // Optional
   guidance: 7.5, // Optional (1-20)
-  seed: 123456 // Optional
+  seed: 123456, // Optional
+  count: 1 // Optional (1-4). If > 1, returns JSON with base64 images.
 };
 
 const res = await fetch("/api/generate", {
@@ -159,11 +191,48 @@ const res = await fetch("/api/generate", {
 });
 
 if (res.ok) {
-  const blob = await res.blob();
-  const imageUrl = URL.createObjectURL(blob);
-  // Use imageUrl in an <img> tag
+  if (data.count === 1) {
+    const blob = await res.blob();
+    const imageUrl = URL.createObjectURL(blob);
+    // Use imageUrl in an <img> tag
+  } else {
+    const result = await res.json();
+    // result.images is an array of base64 strings
+    console.log(result.images);
+  }
 }
   `.trim();
+
+  const handleTestApi = async () => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: testPrompt,
+          count: testCount
+        }),
+      });
+      
+      if (res.ok) {
+        if (testCount === 1) {
+          const blob = await res.blob();
+          setTestResult({ type: 'image', url: URL.createObjectURL(blob) });
+        } else {
+          const data = await res.json();
+          setTestResult({ type: 'batch', images: data.images });
+        }
+      } else {
+        setTestResult({ type: 'error', message: await res.text() });
+      }
+    } catch (err) {
+      setTestResult({ type: 'error', message: 'Network error' });
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   const StudioControls = ({ className }: { className?: string }) => (
     <div className={cn("space-y-8", className)}>
@@ -232,6 +301,27 @@ if (res.ok) {
           />
           <p className="text-[10px] text-muted-foreground leading-relaxed">
             Higher values make the AI follow your prompt more strictly.
+          </p>
+        </div>
+
+        <Separator className="bg-white/5" />
+
+        {/* Image Count */}
+        <div className="space-y-6">
+          <div className="flex justify-between items-center">
+            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Number of Images</label>
+            <span className="text-xs font-mono text-primary">{imageCount}</span>
+          </div>
+          <Slider 
+            value={[imageCount]} 
+            onValueChange={(v) => setImageCount(v[0])} 
+            max={4} 
+            step={1} 
+            min={1}
+            className="py-2"
+          />
+          <p className="text-[10px] text-muted-foreground leading-relaxed">
+            Generate multiple variations at once.
           </p>
         </div>
 
@@ -449,6 +539,27 @@ if (res.ok) {
                               <p className="text-xs md:text-sm text-muted-foreground mt-2">Our AI is painting your masterpiece...</p>
                             </div>
                           </motion.div>
+                        ) : currentBatch.length > 0 ? (
+                          <motion.div 
+                            key="batch"
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="grid grid-cols-2 gap-4 w-full max-w-[600px]"
+                          >
+                            {currentBatch.map((img) => (
+                              <div key={img.id} className="group relative aspect-square rounded-xl overflow-hidden border border-white/10 shadow-xl">
+                                <img src={img.url} alt="Generated" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                                  <Button size="icon" variant="secondary" className="glass h-8 w-8 rounded-lg" onClick={() => downloadImage(img)}>
+                                    <Download size={14} />
+                                  </Button>
+                                  <Button size="icon" variant="secondary" className="glass h-8 w-8 rounded-lg" onClick={() => {setCurrentImage(img); setCurrentBatch([]);}}>
+                                    <Maximize2 size={14} />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </motion.div>
                         ) : currentImage ? (
                           <motion.div 
                             key="result"
@@ -630,6 +741,68 @@ if (res.ok) {
                           <pre className="text-xs md:text-sm font-mono text-primary/80 leading-relaxed">
                             {apiDocumentation}
                           </pre>
+                        </div>
+                      </section>
+
+                      <section className="glass p-6 rounded-2xl border-white/10">
+                        <h3 className="text-lg font-medium mb-6 flex items-center gap-2">
+                          <Terminal size={20} className="text-primary" />
+                          API Playground
+                        </h3>
+                        <div className="grid md:grid-cols-2 gap-8">
+                          <div className="space-y-4">
+                            <div className="space-y-2">
+                              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Test Prompt</label>
+                              <Input 
+                                value={testPrompt} 
+                                onChange={(e) => setTestPrompt(e.target.value)}
+                                className="bg-white/5 border-white/10"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <div className="flex justify-between">
+                                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Count</label>
+                                <span className="text-xs font-mono text-primary">{testCount}</span>
+                              </div>
+                              <Slider 
+                                value={[testCount]} 
+                                onValueChange={(v) => setTestCount(v[0])} 
+                                max={4} 
+                                step={1} 
+                                min={1}
+                              />
+                            </div>
+                            <Button 
+                              onClick={handleTestApi} 
+                              disabled={isTesting || !testPrompt}
+                              className="w-full mesh-gradient"
+                            >
+                              {isTesting ? <Loader2 className="animate-spin mr-2" size={18} /> : <Sparkles className="mr-2" size={18} />}
+                              Run Test Request
+                            </Button>
+                          </div>
+                          
+                          <div className="bg-black/40 rounded-xl p-4 min-h-[200px] flex flex-col items-center justify-center border border-white/5">
+                            {!testResult && !isTesting && (
+                              <p className="text-xs text-muted-foreground">Results will appear here</p>
+                            )}
+                            {isTesting && (
+                              <Loader2 className="animate-spin text-primary" size={32} />
+                            )}
+                            {testResult?.type === 'image' && (
+                              <img src={testResult.url} alt="Test Result" className="max-h-[200px] rounded-lg shadow-lg" />
+                            )}
+                            {testResult?.type === 'batch' && (
+                              <div className="grid grid-cols-2 gap-2">
+                                {testResult.images.map((url: string, i: number) => (
+                                  <img key={i} src={url} alt={`Test ${i}`} className="h-20 w-20 object-cover rounded shadow-lg" />
+                                ))}
+                              </div>
+                            )}
+                            {testResult?.type === 'error' && (
+                              <p className="text-xs text-destructive">{testResult.message}</p>
+                            )}
+                          </div>
                         </div>
                       </section>
 
